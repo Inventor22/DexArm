@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 
 namespace Rotrics.DexArm
 {
-    public class DexArm
+    public class DexArm : IDexArm
     {
         private SerialPort serialPort;
 
@@ -60,10 +60,6 @@ namespace Rotrics.DexArm
             return (DateTime.Now - lastWaitReceieved) < TimeSpan.FromSeconds(2);
         }
 
-        public void SetPositionOld(int x, int y, int z, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
-        {
-        }
-
         public void SetPosition(int x, int y, int z, uint mmPerMinute = 1000, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
         {
             if (this.mmPerMinute == mmPerMinute)
@@ -82,7 +78,7 @@ namespace Rotrics.DexArm
             this.serialPort.WriteLine("M114");
         }
 
-        public void SetAcceleration(int acceleration, int travelAcceleration, int retractAcceleration=60)
+        public void SetAcceleration(int acceleration, int travelAcceleration, int retractAcceleration = 60)
         {
             this.serialPort.WriteLine($"M204 P{acceleration}T{travelAcceleration}T{retractAcceleration}");
         }
