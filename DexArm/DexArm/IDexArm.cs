@@ -1,5 +1,6 @@
 ﻿// Copyright 2020 Dustin Dobransky
 
+using System.Numerics;
 using System.Threading.Tasks;
 
 namespace Rotrics.DexArm
@@ -7,7 +8,7 @@ namespace Rotrics.DexArm
     public interface IDexArm
     {
         void AquireCurrentXyAxisSlope();
-        void GetCurrentPosition();
+        Vector3 GetCurrentPosition();
         void GoHome();
         bool Init();
         bool IsWaiting();
