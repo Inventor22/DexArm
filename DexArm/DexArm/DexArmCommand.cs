@@ -8,6 +8,10 @@ namespace Rotrics.DexArm
         GetCurrentPosition,
         GetXyAxisSlope,
         GetJointAngles,
-        IsMoving
+        GetEncoderPosition,
+        GetAxisAcceleration,
+        Get3DPrintingAcceleration,
+        IsMoving,
+        ReportSettings
     }
 }
