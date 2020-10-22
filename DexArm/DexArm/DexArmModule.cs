@@ -1,7 +1,7 @@
 
 namespace Rotrics.DexArm
 {
-    public enum DexArmModuleOffset
+    public enum DexArmModule
     {
         PenHolder = 0,
         LaserEngraver = 1,
