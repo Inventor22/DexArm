@@ -4,50 +4,108 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.IO.Ports;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Rotrics.DexArm
 {
-    public class DexArm : IDexArm
+    public class DexArm : IDexArm, IDisposable
     {
+        private string portName;
         private SerialPort serialPort;
         private List<string> commandResponses = new List<string>();
 
         private uint mmPerMinute = 1000;
 
+        private Vector3 lastEncoderPositions = Vector3.Zero;
+        private TimeSpan minPollPeriod = TimeSpan.FromMilliseconds(10);
+        private DateTime lastPollTime = DateTime.MinValue;
+
+        private DateTime softRebootTimestamp = DateTime.MinValue;
+        private TimeSpan powerUpTime = TimeSpan.FromMilliseconds(3500);
+
+        public bool PrintResponse { get; set; } = true;
+
+        public DexArmPositioningMode PositioningMode { get; private set; } = DexArmPositioningMode.Absolute;
+
+        public DexArmModule Module { get; private set; } = DexArmModule.PenHolder;
+
+        public IDexArmSettings Settings => settings;
+
+        private DexArmSettings settings = new DexArmSettings()
+        {
+            MinSegmentTimeMicroseconds = 20000.00f,
+            MinFeedrate = 0.00f,
+            MinTravelFeedrate = 0.00f,
+            MaxXJerk = 10.00f,
+            MaxYJerk = 10.00f,
+            MaxZJerk = 10.00f,
+            MaxEJerk = 5.00f
+        };
+
         public DexArm(string portName)
         {
-            serialPort = new SerialPort(portName);
+            this.portName = portName;
+        }
 
-            serialPort.BaudRate = 115200;
-            serialPort.DataBits = 8;
-            serialPort.StopBits = StopBits.One;
-            serialPort.Parity = Parity.None;
-            serialPort.Handshake = Handshake.RequestToSend;
-            serialPort.DtrEnable = true;
-            serialPort.NewLine = "\n";
+        public bool Init()
+        {
+            // Serial port won't be null if SoftReboot is called
+            if (this.serialPort == null)
+            {
+                serialPort = new SerialPort(this.portName);
 
-            //serialPort.DataReceived += this.PrintDexArmOutput;
+                serialPort.BaudRate = 115200;
+                serialPort.DataBits = 8;
+                serialPort.StopBits = StopBits.One;
+                serialPort.Parity = Parity.None;
+                serialPort.Handshake = Handshake.RequestToSend;
+                serialPort.DtrEnable = true;
+                serialPort.NewLine = "\n";
+                //serialPort.DataReceived += this.PrintDexArmOutput;
+            }
+
+            // Handle soft reboot case
+            TimeSpan timeSinceSoftReboot = DateTime.UtcNow - this.softRebootTimestamp;
+            Console.WriteLine("Time since reboot: " + timeSinceSoftReboot.TotalMilliseconds);
+            if (timeSinceSoftReboot < powerUpTime)
+            {
+                Console.WriteLine("Sleeping for : " + (powerUpTime - timeSinceSoftReboot));
+                Thread.Sleep(powerUpTime - timeSinceSoftReboot);
+            }
+
+            // Initialize DexArm
+            if (!this.serialPort.IsOpen)
+            {
+                this.serialPort.Open();
+
+                // Hacky workaround for a bug where upon first powerup or reboot,
+                // DexArm responds with "??????" when the first command it sent.
+                if (this.serialPort.IsOpen)
+                {
+                    bool printResponse = this.PrintResponse;
+                    this.PrintResponse = false;
+                    this.Dwell(TimeSpan.FromMilliseconds(1));
+                    this.PrintResponse = printResponse;
+                }
+                else
+                {
+                    throw new IOException($"Could not connect to DexArm on Port '{this.serialPort.PortName}'");
+                }
+            }
+
+            return this.serialPort.IsOpen;
         }
 
         private void PrintDexArmOutput(object sender, SerialDataReceivedEventArgs e)
         {
             SerialPort port = (SerialPort)sender;
             Console.WriteLine(port.ReadLine());
-        }
-
-        public bool PrintResponse { get; set; } = true;
-
-        public DexArmPositioningMode PositioningMode { get; private set; } = DexArmPositioningMode.Absolute;
-
-        public bool Init()
-        {
-            this.serialPort.Open();
-            return this.serialPort.IsOpen;
         }
 
         private bool ProcessResponse(DexArmCommand command, out object output)
@@ -243,6 +301,36 @@ namespace Rotrics.DexArm
                             return false;
                         }
                     }
+                case DexArmCommand.GetModuleOffset:
+                    {
+                        output = 0.0f;
+                        return true;
+                    }
+                case DexArmCommand.GetModule:
+                    {
+                        string response = commandResponses[0];
+                        if (response.Contains("PEN"))
+                        {
+                            output = DexArmModule.PenHolder;
+                            return true;
+                        }
+                        else if (response.Contains("LASER"))
+                        {
+                            output = DexArmModule.LaserEngraver;
+                            return true;
+                        }
+                        else if (response.Contains("PUMP"))
+                        {
+                            output = DexArmModule.PneumaticModule;
+                            return true;
+                        }
+                        else if (response.Contains("3D"))
+                        {
+                            output = DexArmModule.Printer3D;
+                            return true;
+                        }
+                        return false;
+                    }
                 case DexArmCommand.ReportSettings:
                     {
                         output = string.Join(Environment.NewLine, this.commandResponses);
@@ -304,9 +392,9 @@ namespace Rotrics.DexArm
             return Vector3.Zero;
         }
 
-        public bool Set3DPrintingAcceleration(int acceleration, int travelAcceleration, int retractAcceleration = 60)
+        public bool Set3DPrintingAcceleration(int acceleration, int travelAcceleration, int retractAcceleration)
         {
-            this.serialPort.WriteLine($"M204 P{acceleration}T{travelAcceleration}T{retractAcceleration}");
+            this.serialPort.WriteLine($"M204 P{acceleration} T{travelAcceleration} R{retractAcceleration}");
             return this.ProcessResponse(DexArmCommand.Ok, out _);
         }
 
@@ -352,18 +440,74 @@ namespace Rotrics.DexArm
             return this.ProcessResponse(DexArmCommand.Ok, out _);
         }
 
-        public void ResetHomePosition()
+        public bool SetAdvancedParams(
+            float minSegmentTimeMicroseconds = 20000.00f,
+            float minFeedrate = 0.00f,
+            float minTravelFeedrate = 0.00f,
+            float maxXJerk = 10.00f,
+            float maxYJerk = 10.00f,
+            float maxZJerk = 10.00f,
+            float maxEJerk = 5.00f)
         {
-            this.serialPort.WriteLine("G92.1");
-            this.ProcessResponse(DexArmCommand.Ok, out _);
-            this.serialPort.WriteLine("G0 X300 Y0 Z0");
-            this.ProcessResponse(DexArmCommand.Ok, out _);
+            this.serialPort.WriteLine(
+                $"M205" +
+                $" B{minSegmentTimeMicroseconds:N2}" +
+                $" S{minFeedrate:N2}" +
+                $" T{minTravelFeedrate:N2}" +
+                $" X{maxXJerk:N2}" +
+                $" Y{maxYJerk:N2}" +
+                $" Z{maxZJerk:N2}" +
+                $" E{maxEJerk:N2}");
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.settings.MinSegmentTimeMicroseconds = minSegmentTimeMicroseconds;
+                this.settings.MinFeedrate = minFeedrate;
+                this.settings.MinTravelFeedrate = minTravelFeedrate;
+                this.settings.MaxXJerk = maxXJerk;
+                this.settings.MaxYJerk = maxYJerk;
+                this.settings.MaxZJerk = maxZJerk;
+                this.settings.MaxEJerk = maxEJerk;
+                return true;
+            }
+
+            return false;
         }
 
-        public bool SetOffset(DexArmModuleOffset offset)
+        public bool ResetHomePosition()
         {
-            this.serialPort.WriteLine($"M888 P{(int)offset}");
+            this.serialPort.WriteLine("G92.1");
+            bool resetSuccess = this.ProcessResponse(DexArmCommand.Ok, out _);
+            if (!resetSuccess) return false;
+            this.serialPort.WriteLine("G0 X300 Y0 Z0");
             return this.ProcessResponse(DexArmCommand.Ok, out _);
+        }
+
+        public float GetModuleOffset()
+        {
+            this.serialPort.WriteLine($"M503 S");
+            this.ProcessResponse(DexArmCommand.GetModuleOffset, out object offset);
+            return (float)offset;
+        }
+
+        public bool SetModule(DexArmModule module)
+        {
+            this.serialPort.WriteLine($"M888 P{(int)module}");
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.Module = module;
+                return true;
+            }
+
+            return false;
+        }
+
+        public DexArmModule GetModule()
+        {
+            this.serialPort.WriteLine($"M888");
+            this.ProcessResponse(DexArmCommand.Ok, out object module);
+            return (DexArmModule)module;
         }
 
         public bool ResetToOriginPosition()
@@ -384,8 +528,19 @@ namespace Rotrics.DexArm
             this.serialPort.WriteLine($"G0 F{mmPerMinute}");
             return this.ProcessResponse(DexArmCommand.Ok, out _);
         }
+        
+        public bool SetXySlope(float x, float y)
+        {
+            if (x < -1 || x > 1 || y < -1 || y > 1)
+            {
+                throw new ArgumentOutOfRangeException($"Slope must be within [-1,1]. X:{x}, Y:{y}");
+            }
 
-        public Vector2 GetCurrentXyAxisSlope()
+            this.serialPort.WriteLine($"M891 X{x} Y{y}");
+            return this.ProcessResponse(DexArmCommand.Ok, out _);
+        }
+
+        public Vector2 GetXySlope()
         {
             this.serialPort.WriteLine("M892");
             if (this.ProcessResponse(DexArmCommand.GetXyAxisSlope, out object xyAxisSlope))
@@ -417,15 +572,32 @@ namespace Rotrics.DexArm
         public string ReportSettings(bool verbose)
         {
             this.serialPort.WriteLine(verbose ? "M503" : "M503 S");
-            this.ProcessResponse(DexArmCommand.Ok, out object settings);
+            this.ProcessResponse(DexArmCommand.ReportSettings, out object settings);
             return (string)settings;
         }
 
-        public async Task SoftReboot()
+        public async Task<bool> SoftReboot()
         {
             this.serialPort.WriteLine("M2007");
-            await Task.Delay(1000);
-            this.Init();
+            this.softRebootTimestamp = DateTime.UtcNow;
+            return true;
+
+            //await Task.Delay(500);
+
+            //if (this.serialPort.IsOpen)
+            //{
+            //    this.serialPort.Close();
+            //}
+            //this.serialPort.Dispose();
+            //this.serialPort = null;
+
+
+            //return this.Init();
+        }
+
+        public void Dispose()
+        {
+            this.serialPort?.Dispose();
         }
     }
 }

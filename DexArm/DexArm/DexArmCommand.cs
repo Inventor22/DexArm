@@ -12,6 +12,8 @@ namespace Rotrics.DexArm
         GetEncoderPosition,
         GetAxisAcceleration,
         Get3DPrintingAcceleration,
+        GetModuleOffset,
+        GetModule,
         IsMoving,
         ReportSettings
     }
