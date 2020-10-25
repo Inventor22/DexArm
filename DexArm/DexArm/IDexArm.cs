@@ -38,6 +38,7 @@ namespace Rotrics.DexArm
         bool ResetHomePosition();
         bool ResetToOriginPosition();
         bool ResetWorkingHeight();
-        Task<bool> SoftReboot();
+        bool SoftReboot();
+        bool IsMoving(out Vector3 encoderPosition);
     }
 }
