@@ -22,12 +22,12 @@ namespace Rotrics.DexArm
 
         private uint mmPerMinute = 1000;
 
-        private Vector3 lastEncoderPositions = Vector3.Zero;
-        private TimeSpan minPollPeriod = TimeSpan.FromMilliseconds(10);
-        private DateTime lastPollTime = DateTime.MinValue;
-
         private DateTime softRebootTimestamp = DateTime.MinValue;
         private TimeSpan powerUpTime = TimeSpan.FromMilliseconds(3500);
+
+        private Vector3 lastEncoderPosition = Vector3.Zero;
+        private DateTime lastIsMovingPollTime = DateTime.MinValue;
+        private TimeSpan isMovingPollPeriod = TimeSpan.FromMilliseconds(100);
 
         public bool PrintResponse { get; set; } = true;
 
@@ -90,8 +90,12 @@ namespace Rotrics.DexArm
                 {
                     bool printResponse = this.PrintResponse;
                     this.PrintResponse = false;
+                    // Only looks for "ok" response, any other garbage is discarded
                     this.Dwell(TimeSpan.FromMilliseconds(1));
+                    // Get intial arm position. Necessary for IsMoving command.
+                    this.lastEncoderPosition = this.GetEncoderPosition();
                     this.PrintResponse = printResponse;
+
                 }
                 else
                 {
@@ -526,7 +530,14 @@ namespace Rotrics.DexArm
         public bool SetSpeed(uint mmPerMinute = 1000)
         {
             this.serialPort.WriteLine($"G0 F{mmPerMinute}");
-            return this.ProcessResponse(DexArmCommand.Ok, out _);
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.mmPerMinute = mmPerMinute;
+                return true;
+            }
+
+            return false;
         }
         
         public bool SetXySlope(float x, float y)
@@ -576,23 +587,31 @@ namespace Rotrics.DexArm
             return (string)settings;
         }
 
-        public async Task<bool> SoftReboot()
+        public bool SoftReboot()
         {
             this.serialPort.WriteLine("M2007");
             this.softRebootTimestamp = DateTime.UtcNow;
             return true;
+        }
 
-            //await Task.Delay(500);
+        public bool IsMoving(out Vector3 encoderPosition)
+        {
+            TimeSpan timeSinceLastIsMovingPoll = DateTime.UtcNow - this.lastIsMovingPollTime;
+            if (timeSinceLastIsMovingPoll < this.isMovingPollPeriod)
+            {
+                Thread.Sleep(this.isMovingPollPeriod - timeSinceLastIsMovingPoll);
+            }
 
-            //if (this.serialPort.IsOpen)
-            //{
-            //    this.serialPort.Close();
-            //}
-            //this.serialPort.Dispose();
-            //this.serialPort = null;
+            encoderPosition = this.GetEncoderPosition();
+            this.lastIsMovingPollTime = DateTime.UtcNow;
 
+            if (encoderPosition != Vector3.Zero && encoderPosition != lastEncoderPosition)
+            {
+                lastEncoderPosition = encoderPosition;
+                return true;
+            }
 
-            //return this.Init();
+            return false;
         }
 
         public void Dispose()
