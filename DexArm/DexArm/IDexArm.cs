@@ -2,6 +2,7 @@
 
 using System;
 using System.Numerics;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Rotrics.DexArm
@@ -17,7 +18,8 @@ namespace Rotrics.DexArm
         Vector2 GetXySlope();
         bool SetXySlope(float xSlope, float ySlope);
         bool SetPositioningMode(DexArmPositioningMode mode);
-        bool SetPosition(int x, int y, int z, uint mmPerMinute = 1000, DexArmMoveMode moveMode = DexArmMoveMode.FastMode);
+        bool SetPosition(int x, int y, int z, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode);
+        bool SetPosition(int x, int y, int z, DexArmMoveMode moveMode = DexArmMoveMode.FastMode);
         bool Set3DPrintingAcceleration(int printAcceleration = 60, int travelAcceleration = 40, int retractAcceleration = 60);
         bool SetAxisAcceleration(int x = 3000, int y = 3000, int z = 3000, int e = 10000);
         bool SetModule(DexArmModule offset);
@@ -39,7 +41,10 @@ namespace Rotrics.DexArm
         bool ResetHomePosition();
         bool ResetToOriginPosition();
         bool ResetWorkingHeight();
-        bool SoftReboot();
+        void SoftReboot();
+        bool WaitForFinish();
+        Task<bool> WaitForFinishAsync(CancellationToken token = default);
         bool IsMoving(out Vector3 encoderPosition);
+        void SendCommand(string command);
     }
 }

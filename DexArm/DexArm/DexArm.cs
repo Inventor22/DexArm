@@ -8,6 +8,7 @@ using System.IO;
 using System.IO.Ports;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,11 +25,18 @@ namespace Rotrics.DexArm
 
         private DateTime softRebootTimestamp = DateTime.MinValue;
         private TimeSpan powerUpTime = TimeSpan.FromMilliseconds(3500);
+        private bool rebooted = false;
 
         private Vector3 lastEncoderPosition = Vector3.Zero;
         private DateTime lastIsMovingPollTime = DateTime.MinValue;
-        private TimeSpan isMovingPollPeriod = TimeSpan.FromMilliseconds(100);
+        private TimeSpan isMovingPollPeriod = TimeSpan.FromMilliseconds(50);
 
+        private DateTime timeLastMoveCommandSent = DateTime.MinValue;
+        private TimeSpan timeForEncoderToUpdateAfterMoveCommandSent = TimeSpan.FromMilliseconds(160);
+
+        private StringBuilder positionBuilder = new StringBuilder();
+
+        public bool PrintCommand { get; set; } = true;
         public bool PrintResponse { get; set; } = true;
 
         public DexArmPositioningMode PositioningMode { get; private set; } = DexArmPositioningMode.Absolute;
@@ -71,12 +79,16 @@ namespace Rotrics.DexArm
             }
 
             // Handle soft reboot case
-            TimeSpan timeSinceSoftReboot = DateTime.UtcNow - this.softRebootTimestamp;
-            Console.WriteLine("Time since reboot: " + timeSinceSoftReboot.TotalMilliseconds);
-            if (timeSinceSoftReboot < powerUpTime)
+            if (rebooted)
             {
-                Console.WriteLine("Sleeping for : " + (powerUpTime - timeSinceSoftReboot));
-                Thread.Sleep(powerUpTime - timeSinceSoftReboot);
+                TimeSpan timeSinceSoftReboot = DateTime.UtcNow - this.softRebootTimestamp;
+                Console.WriteLine("Time since reboot: " + timeSinceSoftReboot.TotalMilliseconds);
+                if (timeSinceSoftReboot < powerUpTime)
+                {
+                    Console.WriteLine("Sleeping for : " + (powerUpTime - timeSinceSoftReboot));
+                    Thread.Sleep(powerUpTime - timeSinceSoftReboot);
+                }
+                rebooted = false;
             }
 
             // Initialize DexArm
@@ -345,19 +357,36 @@ namespace Rotrics.DexArm
             }
         }
 
-        public bool SetPosition(int x, int y, int z, uint mmPerMinute = 1000, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        public void SendCommand(string command)
         {
-            if (this.mmPerMinute == mmPerMinute)
+            if (this.PrintCommand) Console.WriteLine(command);
+            this.serialPort.WriteLine(command);
+        }
+
+        public bool SetPosition(int x, int y, int z, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        {
+            this.SendCommand($"G{(int)moveMode} X{x} Y{y} Z{z}");
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
             {
-                this.serialPort.WriteLine($"G{(int)moveMode} X{x} Y{y} Z{z}");
-            }
-            else
-            {
-                this.mmPerMinute = mmPerMinute;
-                this.serialPort.WriteLine($"G{(int)moveMode} F{mmPerMinute} X{x} Y{y} Z{z}");
+                this.timeLastMoveCommandSent = DateTime.UtcNow;
+                return true;
             }
 
-            return this.ProcessResponse(DexArmCommand.Ok, out _);
+            return false;
+        }
+
+        public bool SetPosition(int x, int y, int z, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        {
+            this.SendCommand($"G{(int)moveMode} F{mmPerMinute} X{x} Y{y} Z{z}");
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.timeLastMoveCommandSent = DateTime.UtcNow;
+                return true;
+            }
+
+            return false;
         }
 
         public Vector3 GetCurrentPosition()
@@ -522,14 +551,20 @@ namespace Rotrics.DexArm
 
         public bool SetPositioningMode(DexArmPositioningMode mode)
         {
-            this.PositioningMode = mode;
             this.serialPort.WriteLine($"G9{(int)mode}");
-            return this.ProcessResponse(DexArmCommand.Ok, out _);
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.PositioningMode = mode;
+                return true;
+            }
+
+            return false;
         }
 
         public bool SetSpeed(uint mmPerMinute = 1000)
         {
-            this.serialPort.WriteLine($"G0 F{mmPerMinute}");
+            this.SendCommand($"G0 F{mmPerMinute}");
 
             if (this.ProcessResponse(DexArmCommand.Ok, out _))
             {
@@ -577,7 +612,14 @@ namespace Rotrics.DexArm
         public bool SetEncoderPosition(float x, float y, float z)
         {
             this.serialPort.WriteLine($"M894 X{x} Y{y} Z{z}");
-            return this.ProcessResponse(DexArmCommand.Ok, out _);
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.timeLastMoveCommandSent = DateTime.UtcNow;
+                return true;
+            }
+
+            return false;
         }
 
         public string ReportSettings(bool verbose)
@@ -587,15 +629,22 @@ namespace Rotrics.DexArm
             return (string)settings;
         }
 
-        public bool SoftReboot()
+        public void SoftReboot()
         {
             this.serialPort.WriteLine("M2007");
             this.softRebootTimestamp = DateTime.UtcNow;
-            return true;
+            this.rebooted = true;
         }
 
         public bool IsMoving(out Vector3 encoderPosition)
         {
+            TimeSpan timeSinceLastMoveCommandSent = DateTime.UtcNow - this.timeLastMoveCommandSent;
+            if (timeSinceLastMoveCommandSent < this.timeForEncoderToUpdateAfterMoveCommandSent)
+            {
+                encoderPosition = lastEncoderPosition;
+                return true;
+            }
+
             TimeSpan timeSinceLastIsMovingPoll = DateTime.UtcNow - this.lastIsMovingPollTime;
             if (timeSinceLastIsMovingPoll < this.isMovingPollPeriod)
             {
@@ -612,6 +661,37 @@ namespace Rotrics.DexArm
             }
 
             return false;
+        }
+
+        public bool WaitForFinish()
+        {
+            this.serialPort.WriteLine("M400");
+            return this.ProcessResponse(DexArmCommand.Ok, out _);
+        }
+
+        public Task<bool> WaitForFinishAsync(CancellationToken token = default)
+        {
+            this.serialPort.WriteLine("M400");
+
+            return Task.Run(() =>
+            {
+                while (true)
+                {
+                    if (token.IsCancellationRequested)
+                    {
+                        return false;
+                    }
+
+                    string response = this.serialPort.ReadLine();
+                    Console.WriteLine($"{nameof(DexArm.WaitForFinishAsync)}: {response}");
+
+                    if (response.StartsWith("ok"))
+                    {
+                        return true;
+                    }
+                }
+            }, 
+            token);
         }
 
         public void Dispose()
