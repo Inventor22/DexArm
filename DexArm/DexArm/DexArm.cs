@@ -376,6 +376,24 @@ namespace Rotrics.DexArm
             return false;
         }
 
+        public bool SetPosition(float x, float y, float z, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        {
+            this.SendCommand($"G{(int)moveMode} X{x} Y{y} Z{z}");
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.timeLastMoveCommandSent = DateTime.UtcNow;
+                return true;
+            }
+
+            return false;
+        }
+
+        public bool SetPosition(Vector3 position, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        {
+            return this.SetPosition(position.X, position.Y, position.Z, moveMode);
+        }
+
         public bool SetPosition(int x, int y, int z, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
         {
             this.SendCommand($"G{(int)moveMode} F{mmPerMinute} X{x} Y{y} Z{z}");
@@ -387,6 +405,24 @@ namespace Rotrics.DexArm
             }
 
             return false;
+        }
+
+        public bool SetPosition(float x, float y, float z, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        {
+            this.SendCommand($"G{(int)moveMode} F{mmPerMinute} X{x} Y{y} Z{z}");
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.timeLastMoveCommandSent = DateTime.UtcNow;
+                return true;
+            }
+
+            return false;
+        }
+
+        public bool SetPosition(Vector3 position, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        {
+            return this.SetPosition(position.X, position.Y, position.Z, mmPerMinute, moveMode);
         }
 
         public Vector3 GetCurrentPosition()

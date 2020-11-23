@@ -19,7 +19,11 @@ namespace Rotrics.DexArm
         bool SetXySlope(float xSlope, float ySlope);
         bool SetPositioningMode(DexArmPositioningMode mode);
         bool SetPosition(int x, int y, int z, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode);
+        bool SetPosition(float x, float y, float z, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode);
+        bool SetPosition(Vector3 position, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode);
         bool SetPosition(int x, int y, int z, DexArmMoveMode moveMode = DexArmMoveMode.FastMode);
+        bool SetPosition(float x, float y, float z, DexArmMoveMode moveMode = DexArmMoveMode.FastMode);
+        bool SetPosition(Vector3 position, DexArmMoveMode moveMode = DexArmMoveMode.FastMode);
         bool Set3DPrintingAcceleration(int printAcceleration = 60, int travelAcceleration = 40, int retractAcceleration = 60);
         bool SetAxisAcceleration(int x = 3000, int y = 3000, int z = 3000, int e = 10000);
         bool SetModule(DexArmModule offset);
