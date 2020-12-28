@@ -1,13 +1,10 @@
 ﻿// Copyright 2020 Dustin Dobransky
 
 using System;
-using System.Collections;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Ports;
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -40,6 +37,23 @@ namespace Rotrics.DexArm
         public bool PrintResponse { get; set; } = true;
 
         public DexArmPositioningMode PositioningMode { get; private set; } = DexArmPositioningMode.Absolute;
+
+        public DexArmMoveMode DefaultMoveMode { get; set; } = DexArmMoveMode.FastMode;
+
+        private uint defaultVelocity = 1000; // mm per minute
+        public uint DefaultVelocity
+        {
+            get => defaultVelocity;
+            set
+            {
+                if (value > 8000)
+                {
+                    throw new ArgumentOutOfRangeException($"Cannot set velocity greater than 8000mm/minute. Assigned Velocity: {value}");
+                }
+
+                this.defaultVelocity = value;
+            }
+        }
 
         public DexArmModule Module { get; private set; } = DexArmModule.PenHolder;
 
@@ -97,7 +111,7 @@ namespace Rotrics.DexArm
                 this.serialPort.Open();
 
                 // Hacky workaround for a bug where upon first powerup or reboot,
-                // DexArm responds with "??????" when the first command it sent.
+                // DexArm responds with "??????" when the first command is sent.
                 if (this.serialPort.IsOpen)
                 {
                     bool printResponse = this.PrintResponse;
@@ -362,10 +376,15 @@ namespace Rotrics.DexArm
             if (this.PrintCommand) Console.WriteLine(command);
             this.serialPort.WriteLine(command);
         }
-
-        public bool SetPosition(int x, int y, int z, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        
+        public bool SetPosition(Vector3 position)
         {
-            this.SendCommand($"G{(int)moveMode} X{x} Y{y} Z{z}");
+            return this.SetPosition(position.X, position.Y, position.Z);
+        }
+
+        public bool SetPosition(float x, float y, float z)
+        {
+            this.SendCommand($"G{(int)this.DefaultMoveMode} X{x} Y{y} Z{z}");
 
             if (this.ProcessResponse(DexArmCommand.Ok, out _))
             {
@@ -376,27 +395,31 @@ namespace Rotrics.DexArm
             return false;
         }
 
-        public bool SetPosition(float x, float y, float z, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
-        {
-            this.SendCommand($"G{(int)moveMode} X{x} Y{y} Z{z}");
-
-            if (this.ProcessResponse(DexArmCommand.Ok, out _))
-            {
-                this.timeLastMoveCommandSent = DateTime.UtcNow;
-                return true;
-            }
-
-            return false;
-        }
-
-        public bool SetPosition(Vector3 position, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        public bool SetPosition(Vector3 position, DexArmMoveMode moveMode)
         {
             return this.SetPosition(position.X, position.Y, position.Z, moveMode);
         }
 
-        public bool SetPosition(int x, int y, int z, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        public bool SetPosition(float x, float y, float z, DexArmMoveMode moveMode)
         {
-            this.SendCommand($"G{(int)moveMode} F{mmPerMinute} X{x} Y{y} Z{z}");
+            this.SendCommand($"G{(int)moveMode} X{x} Y{y} Z{z}");
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.timeLastMoveCommandSent = DateTime.UtcNow;
+                return true;
+            }
+
+            return false;
+        }
+        public bool SetPosition(Vector3 position, uint mmPerMinute)
+        {
+            return this.SetPosition(position.X, position.Y, position.Z, mmPerMinute);
+        }
+
+        public bool SetPosition(float x, float y, float z, uint mmPerMinute)
+        {
+            this.SendCommand($"G{(int)this.DefaultMoveMode} F{mmPerMinute} X{x} Y{y} Z{z}");
 
             if (this.ProcessResponse(DexArmCommand.Ok, out _))
             {
@@ -407,22 +430,22 @@ namespace Rotrics.DexArm
             return false;
         }
 
-        public bool SetPosition(float x, float y, float z, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
-        {
-            this.SendCommand($"G{(int)moveMode} F{mmPerMinute} X{x} Y{y} Z{z}");
-
-            if (this.ProcessResponse(DexArmCommand.Ok, out _))
-            {
-                this.timeLastMoveCommandSent = DateTime.UtcNow;
-                return true;
-            }
-
-            return false;
-        }
-
-        public bool SetPosition(Vector3 position, uint mmPerMinute, DexArmMoveMode moveMode = DexArmMoveMode.FastMode)
+        public bool SetPosition(Vector3 position, uint mmPerMinute, DexArmMoveMode moveMode)
         {
             return this.SetPosition(position.X, position.Y, position.Z, mmPerMinute, moveMode);
+        }
+
+        public bool SetPosition(float x, float y, float z, uint mmPerMinute, DexArmMoveMode moveMode)
+        {
+            this.SendCommand($"G{(int)moveMode} F{mmPerMinute} X{x} Y{y} Z{z}");
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.timeLastMoveCommandSent = DateTime.UtcNow;
+                return true;
+            }
+
+            return false;
         }
 
         public Vector3 GetCurrentPosition()
@@ -566,6 +589,36 @@ namespace Rotrics.DexArm
             if (this.ProcessResponse(DexArmCommand.Ok, out _))
             {
                 this.Module = module;
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Load pen into pen module.
+        /// Send commands:
+        /// G0 X75 Y300 Z-80
+        /// G0 X75 Y300 Z-86 ;make a dot on paper
+        /// G0 X75 Y300 Z-80
+        /// 
+        /// G0 X-75 Y300 Z-80
+        /// G0 X-75 Y300 Z-86 ;make a dot on paper
+        /// G0 X-75 Y300 Z-80
+        /// 
+        /// Measure actual distance between two dots.
+        /// Target distance is 150.
+        /// </summary>
+        /// <param name="targetDistance"></param>
+        /// <param name="actualDistance"></param>
+        /// <returns></returns>
+        public bool CalibrateCustomModule(float targetDistance, float actualDistance)
+        {
+            this.serialPort.WriteLine($"M888 P5 T{targetDistance} A{actualDistance}");
+
+            if (this.ProcessResponse(DexArmCommand.Ok, out _))
+            {
+                this.Module = DexArmModule.Custom;
                 return true;
             }
 

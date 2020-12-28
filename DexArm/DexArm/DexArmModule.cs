@@ -7,6 +7,7 @@ namespace Rotrics.DexArm
         PenHolder = 0,
         LaserEngraver = 1,
         PneumaticModule = 2,
-        Printer3D = 3
+        Printer3D = 3,
+        Custom = 5
     }
 }
