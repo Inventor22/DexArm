@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
 using System.Numerics;
@@ -35,6 +36,7 @@ namespace Rotrics.DexArm
 
         public bool PrintCommand { get; set; } = true;
         public bool PrintResponse { get; set; } = true;
+        public int ResponseRetries { get; set; } = 20;
 
         public DexArmPositioningMode PositioningMode { get; private set; } = DexArmPositioningMode.Absolute;
 
@@ -96,10 +98,10 @@ namespace Rotrics.DexArm
             if (rebooted)
             {
                 TimeSpan timeSinceSoftReboot = DateTime.UtcNow - this.softRebootTimestamp;
-                Console.WriteLine("Time since reboot: " + timeSinceSoftReboot.TotalMilliseconds);
+                Trace.WriteLine("Time since reboot: " + timeSinceSoftReboot.TotalMilliseconds);
                 if (timeSinceSoftReboot < powerUpTime)
                 {
-                    Console.WriteLine("Sleeping for : " + (powerUpTime - timeSinceSoftReboot));
+                    Trace.WriteLine("Sleeping for : " + (powerUpTime - timeSinceSoftReboot));
                     Thread.Sleep(powerUpTime - timeSinceSoftReboot);
                 }
                 rebooted = false;
@@ -135,12 +137,11 @@ namespace Rotrics.DexArm
         private void PrintDexArmOutput(object sender, SerialDataReceivedEventArgs e)
         {
             SerialPort port = (SerialPort)sender;
-            Console.WriteLine(port.ReadLine());
+            Trace.WriteLine(port.ReadLine());
         }
 
         private bool ProcessResponse(DexArmCommand command, out object output)
         {
-            output = null;
             this.commandResponses.Clear();
 
             int responseAttempts = 0;
@@ -152,45 +153,52 @@ namespace Rotrics.DexArm
                 {
                     this.commandResponses.Add(response);
                 }
-                if (response.StartsWith("ok"))
+                else if (response.StartsWith("ok"))
                 {
                     successfulResponse = true;
                     break;
                 }
             }
-            while (responseAttempts++ < 50);
+            while (responseAttempts++ < this.ResponseRetries);
 
             if (this.PrintResponse)
             {
-                Console.WriteLine($"Responses [{this.commandResponses.Count}]");
+                Trace.WriteLine($"Responses [{this.commandResponses.Count}]");
                 foreach (string log in this.commandResponses)
                 {
-                    Console.WriteLine($"  | {log}");
+                    Trace.WriteLine($"  | {log}");
                 }
             }
 
             if (!successfulResponse)
             {
+                output = null;
                 return false;
             }
 
+            return this.ProcessCommandResponses(command, this.commandResponses, out output);
+        }
+
+        private bool ProcessCommandResponses(DexArmCommand command, List<string> responses, out object output)
+        {
+            output = null;
             switch (command)
             {
                 case DexArmCommand.Ok:
                     return true;
                 case DexArmCommand.GoHome:
-                    return this.commandResponses[0].StartsWith("M1112");
+                    return responses[0].StartsWith("M1112");
                 case DexArmCommand.GetXyAxisSlope:
                     {
-                        Match xAxisSlopeMatch = Regex.Match(this.commandResponses[this.commandResponses.Count - 3], @"GET X AXIS SLOPE IS (?<xSlope>-?\d+\.\d+)");
-                        Match yAxisSlopeMatch = Regex.Match(this.commandResponses[this.commandResponses.Count - 2], @"GET Y AXIS SLOPE IS (?<ySlope>-?\d+\.\d+)");
+                        Match xAxisSlopeMatch = Regex.Match(responses[responses.Count - 3], @"GET X AXIS SLOPE IS (?<xSlope>-?\d+\.\d+)");
+                        Match yAxisSlopeMatch = Regex.Match(responses[responses.Count - 2], @"GET Y AXIS SLOPE IS (?<ySlope>-?\d+\.\d+)");
 
                         if (!xAxisSlopeMatch.Success || !yAxisSlopeMatch.Success)
                         {
                             output = Vector2.Zero;
                             return false;
                         }
-                        
+
                         try
                         {
                             output = new Vector2(
@@ -205,7 +213,7 @@ namespace Rotrics.DexArm
                     }
                 case DexArmCommand.GetJointAngles:
                     {
-                        Match jointAnglesMatch = Regex.Match(this.commandResponses[2], @"DEXARM Theta A:(?<A>-?\d+\.\d+)  Theta B:(?<B>-?\d+\.\d+)  Theta C:(?<C>-?\d+\.\d+)");
+                        Match jointAnglesMatch = Regex.Match(responses[2], @"DEXARM Theta A:(?<A>-?\d+\.\d+)  Theta B:(?<B>-?\d+\.\d+)  Theta C:(?<C>-?\d+\.\d+)");
                         if (!jointAnglesMatch.Success)
                         {
                             output = Vector3.Zero;
@@ -230,7 +238,7 @@ namespace Rotrics.DexArm
                     }
                 case DexArmCommand.GetEncoderPosition:
                     {
-                        Match encoderPositionMatch = Regex.Match(this.commandResponses[0], @"M894 X(?<X>-?\d+\.?\d+) Y(?<Y>-?\d+\.?\d+) Z(?<Z>-?\d+\.?\d+)");
+                        Match encoderPositionMatch = Regex.Match(responses[0], @"M894 X(?<X>-?\d+\.?\d+) Y(?<Y>-?\d+\.?\d+) Z(?<Z>-?\d+\.?\d+)");
                         if (!encoderPositionMatch.Success)
                         {
                             output = Vector3.Zero;
@@ -257,7 +265,7 @@ namespace Rotrics.DexArm
                     return false;
                 case DexArmCommand.GetCurrentPosition:
                     {
-                        Match positionMatch = Regex.Match(this.commandResponses[0], @"X:(?<X>-?\d+\.\d+) Y:(?<Y>-?\d+\.\d+) Z:(?<Z>-?\d+\.\d+)");
+                        Match positionMatch = Regex.Match(responses[0], @"X:(?<X>-?\d+\.\d+) Y:(?<Y>-?\d+\.\d+) Z:(?<Z>-?\d+\.\d+)");
                         if (!positionMatch.Success)
                         {
                             output = Vector3.Zero;
@@ -282,7 +290,7 @@ namespace Rotrics.DexArm
                     }
                 case DexArmCommand.GetAxisAcceleration:
                     {
-                        Match axisAccelMatch = Regex.Match(this.commandResponses[10], @"M201 X(?<X>-?\d+\.\d+) Y(?<Y>-?\d+\.\d+) Z(?<Z>-?\d+\.\d+) E(?<E>-?\d+\.\d+)");
+                        Match axisAccelMatch = Regex.Match(responses[10], @"M201 X(?<X>-?\d+\.\d+) Y(?<Y>-?\d+\.\d+) Z(?<Z>-?\d+\.\d+) E(?<E>-?\d+\.\d+)");
                         if (!axisAccelMatch.Success)
                         {
                             output = Vector4.Zero;
@@ -308,7 +316,7 @@ namespace Rotrics.DexArm
                     }
                 case DexArmCommand.Get3DPrintingAcceleration:
                     {
-                        Match accel3DMatch = Regex.Match(this.commandResponses[12], @"M204 P(?<P>-?\d+\.\d+) R(?<R>-?\d+\.\d+) T(?<T>-?\d+\.\d+)");
+                        Match accel3DMatch = Regex.Match(responses[12], @"M204 P(?<P>-?\d+\.\d+) R(?<R>-?\d+\.\d+) T(?<T>-?\d+\.\d+)");
                         if (!accel3DMatch.Success)
                         {
                             output = Vector3.Zero;
@@ -338,7 +346,7 @@ namespace Rotrics.DexArm
                     }
                 case DexArmCommand.GetModule:
                     {
-                        string response = commandResponses[0];
+                        string response = responses[0];
                         if (response.Contains("PEN"))
                         {
                             output = DexArmModule.PenHolder;
@@ -363,7 +371,7 @@ namespace Rotrics.DexArm
                     }
                 case DexArmCommand.ReportSettings:
                     {
-                        output = string.Join(Environment.NewLine, this.commandResponses);
+                        output = string.Join(Environment.NewLine, responses);
                         return true;
                     }
                 default:
@@ -373,7 +381,7 @@ namespace Rotrics.DexArm
 
         public void SendCommand(string command)
         {
-            if (this.PrintCommand) Console.WriteLine(command);
+            if (this.PrintCommand) Trace.WriteLine(command);
             this.serialPort.WriteLine(command);
         }
         
@@ -761,6 +769,8 @@ namespace Rotrics.DexArm
         public Task<bool> WaitForFinishAsync(CancellationToken token = default)
         {
             this.serialPort.WriteLine("M400");
+            Trace.WriteLine(
+                $"WaitForFinishAsync {DateTime.Now.ToString("hh:mm:ss.fff")}");
 
             return Task.Run(() =>
             {
@@ -772,7 +782,7 @@ namespace Rotrics.DexArm
                     }
 
                     string response = this.serialPort.ReadLine();
-                    Console.WriteLine($"{nameof(DexArm.WaitForFinishAsync)}: {response}");
+                    Trace.WriteLine($"{nameof(DexArm.WaitForFinishAsync)}: {response}");
 
                     if (response.StartsWith("ok"))
                     {
