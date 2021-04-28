@@ -2,6 +2,7 @@
 
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -54,6 +55,6 @@ namespace Rotrics.DexArm
         bool WaitForFinish();
         Task<bool> WaitForFinishAsync(CancellationToken token = default);
         bool IsMoving(out Vector3 encoderPosition);
-        void SendCommand(string command);
+        void SendCommand(string command, [CallerMemberName] string memberName = "");
     }
 }
