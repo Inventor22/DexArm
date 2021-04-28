@@ -11,6 +11,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace Rotrics.DexArm
@@ -20,7 +21,6 @@ namespace Rotrics.DexArm
         private string portName;
         private SerialPort serialPort;
         private List<string> commandResponses = new List<string>();
-
 
         private DateTime softRebootTimestamp = DateTime.MinValue;
         private TimeSpan powerUpTime = TimeSpan.FromMilliseconds(3500);
@@ -43,9 +43,9 @@ namespace Rotrics.DexArm
         public uint DefaultSpeed => mmPerMinute;
 
 
-        public DexArmPositioningMode PositioningMode { get; private set; } = DexArmPositioningMode.Absolute;
-
         public DexArmMoveMode DefaultMoveMode { get; set; } = DexArmMoveMode.FastMode;
+
+        public DexArmPositioningMode PositioningMode { get; private set; } = DexArmPositioningMode.Absolute;
 
         public DexArmModule Module { get; private set; } = DexArmModule.PenHolder;
 
@@ -62,9 +62,22 @@ namespace Rotrics.DexArm
             MaxEJerk = 5.00f
         };
 
+        public event EventHandler<SerialPortReadLineArgs> NewSerialPortMessage;
+        private CancellationTokenSource serialPortMessageCancellationTokenSource;
+
+        private readonly Channel<string> serialPortChannel;
+        private readonly ChannelWriter<string> serialPortMessageWriter;
+        private readonly ChannelReader<string> serialPortMessageReader;
+
+        private StringBuilder sb = new StringBuilder();
+        private static readonly string[] newLineDelimiter = new string[] { Environment.NewLine };
+
         public DexArm(string portName)
         {
             this.portName = portName;
+            this.serialPortChannel = Channel.CreateUnbounded<string>();
+            this.serialPortMessageWriter = this.serialPortChannel.Writer;
+            this.serialPortMessageReader = this.serialPortChannel.Reader;
         }
 
         public bool Init()
@@ -108,16 +121,11 @@ namespace Rotrics.DexArm
                 // DexArm responds with "??????" when the first command is sent.
                 if (this.serialPort.IsOpen)
                 {
-                    bool printResponse = this.PrintResponse;
-                    this.PrintResponse = false;
                     // Only looks for "ok" response, any other garbage is discarded
-                    Trace.WriteLine("Dwell start");
                     this.Dwell(TimeSpan.FromMilliseconds(1));
-                    Trace.WriteLine("Dwell end");
 
                     // Get intial arm position. Necessary for IsMoving command.
                     this.lastEncoderPosition = this.GetEncoderPosition();
-                    this.PrintResponse = printResponse;
                 }
                 else
                 {
@@ -126,20 +134,12 @@ namespace Rotrics.DexArm
             }
 
             //serialPort.DataReceived += this.OnSerialPortDataReceived;
+            this.serialPortMessageCancellationTokenSource?.Cancel();
             this.serialPortMessageCancellationTokenSource = new CancellationTokenSource();
             Task.Run(() => this.PublishSerialPortReadLineMessage(serialPortMessageCancellationTokenSource.Token));
 
             return this.serialPort.IsOpen;
         }
-
-        public event EventHandler<SerialPortReadLineArgs> NewSerialPortMessage;
-        private CancellationTokenSource serialPortMessageCancellationTokenSource;
-
-        private ConcurrentQueue<string> serialPortMessages = new ConcurrentQueue<string>();
-        private BlockingCollection<string> serialPortMessagesBlocking = new BlockingCollection<string>(new ConcurrentQueue<string>());
-
-        private StringBuilder sb = new StringBuilder();
-        private static readonly string[] newLineDelimiter = new string[] { Environment.NewLine };
 
         private void PublishSerialPortReadLineMessage(CancellationToken token)
         {
@@ -148,7 +148,8 @@ namespace Rotrics.DexArm
                 string message = this.serialPort.ReadLine();
 
                 //this.serialPortMessages.Enqueue(message);
-                this.serialPortMessagesBlocking.Add(message);
+                //this.serialPortMessagesBlocking.Add(message);
+                this.serialPortMessageWriter.TryWrite(message);
 
                 this.NewSerialPortMessage?.Invoke(this, new SerialPortReadLineArgs(message));
             }
@@ -213,37 +214,38 @@ namespace Rotrics.DexArm
             this.commandResponses.Clear();
 
             int responseAttempts = 0;
-            bool successfulResponse = await Task.Run(() =>
+            bool successfulResponse = false;
+
+            do
             {
-                do
+                //string response = await this.SerialPortReadLineAsync();
+                //this.serialPortMessagesBlocking.Take();
+                //if (this.serialPortMessages.TryDequeue(out string response))
+                //string response = this.serialPortMessagesBlocking.Take(token);
+                string response = await this.serialPortMessageReader.ReadAsync(token);
+
+                if (token.IsCancellationRequested)
                 {
-                    //string response = await this.SerialPortReadLineAsync();
-                    //this.serialPortMessagesBlocking.Take();
-                    //if (this.serialPortMessages.TryDequeue(out string response))
-                    string response = this.serialPortMessagesBlocking.Take(token);
-
-                    if (token.IsCancellationRequested)
-                    {
-                        return false;
-                    }
-                    
-                    if (this.PrintReceivedCommandResponses)
-                    {
-                        Trace.WriteLine("ProcessResponseAsync: " + response);
-                    }
-
-                    if (response.StartsWith("wait") == false)
-                    {
-                        this.commandResponses.Add(response);
-                    }
-                    if (response.StartsWith("ok"))
-                    {
-                        return true;
-                    }
+                    break;
                 }
-                while (responseAttempts++ < this.ResponseRetries);
-                return false;
-            });
+                    
+                if (this.PrintReceivedCommandResponses)
+                {
+                    Trace.WriteLine("ProcessResponseAsync: " + response);
+                }
+
+                if (response.StartsWith("wait") == false)
+                {
+                    this.commandResponses.Add(response);
+                }
+
+                if (response.StartsWith("ok"))
+                {
+                    successfulResponse = true;
+                    break;
+                }
+            }
+            while (responseAttempts++ < this.ResponseRetries);
 
             if (this.PrintResponse)
             {
@@ -552,6 +554,11 @@ namespace Rotrics.DexArm
             return success;
         }
 
+        public async Task<bool> SetPositionAsync(Vector3 xyz, DexArmMoveMode moveMode)
+        {
+            return await this.SetPositionAsync(xyz.X, xyz.Y, xyz.Z, moveMode);
+        }
+
         public bool SetPosition(Vector3 position, DexArmMoveMode moveMode)
         {
             return this.SetPosition(position.X, position.Y, position.Z, moveMode);
@@ -833,6 +840,12 @@ namespace Rotrics.DexArm
 
         public async Task<bool> SetPositioningModeAsync(DexArmPositioningMode mode)
         {
+            if (this.PositioningMode == mode)
+            {
+                Trace.WriteLine($"PositioningMode already set to '{mode}'");
+                return true;
+            }
+
             this.SendCommand($"G9{(int)mode}");
 
             (bool success, _) = await this.ProcessResponseAsync(DexArmCommand.Ok);
